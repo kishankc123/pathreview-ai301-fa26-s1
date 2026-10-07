@@ -93,13 +93,9 @@ want to avoid introducing myself.
 
 ## Test plan
 
-Re-running my Unit 2 repro steps, with the fix applied, expecting:
+Re-ran my Unit 2 repro steps against the real fixed code on branch `fix/53-redactfailfix`.
 
-```
-$ python -m pytest tests/unit/test_pii_scrubber.py -v -m unit
-```
-Expected: all 25 tests pass (the four phone tests that were `XFAIL` now `PASS`, since their
-markers are removed; `test_mixed_pii_and_text` stays `XFAIL`, unchanged).
+**Before (posted in Unit 2, https://github.com/codepath/pathreview-ai301-fa26-s1/issues/53#issuecomment-5903747356):**
 
 ```
 $ python -c "
@@ -108,14 +104,55 @@ s = PIIScrubber()
 print(repr(s.scrub('Call me at (555) 123-4567 or 555-123-4567')))
 print(repr(s.detect('Call me at (555) 123-4567')))
 "
+'Call me at (555) 123-4567 or [REDACTED]'
+[]
 ```
-Expected: `scrub()` returns `'Call me at ([REDACTED] or [REDACTED]'` (digits redacted; the
-leading `(` remains, per the out-of-scope note above) and `detect()` returns a non-empty list
-containing a `phone_us` entry for the parenthesized number.
 
-Also re-running the full suite (`make test-unit` / `pytest tests/unit`) to confirm no
-regression in the email, SSN, international-phone, or street-address checks, which do not
-touch this pattern.
+**After (same commands, run against the fix on this branch):**
+
+```
+$ python -c "
+from safety.pii_scrubber import PIIScrubber
+s = PIIScrubber()
+print(repr(s.scrub('Call me at (555) 123-4567 or 555-123-4567')))
+print(repr(s.detect('Call me at (555) 123-4567')))
+"
+'Call me at ([REDACTED] or [REDACTED]'
+[{'type': 'phone_us', 'value': '555) 123-4567', 'start': 12, 'end': 25}]
+```
+
+Matches what the plan predicted: digits are now redacted and detected; the leading `(` remains
+unredacted, exactly as flagged out-of-scope above.
+
+**Before — the four named tests (also from Unit 2):** all four `XFAIL`.
+
+**After — same command, run against the fix:**
+
+```
+$ python -m pytest tests/unit/test_pii_scrubber.py -v -m unit
+...
+tests/unit/test_pii_scrubber.py::TestPIIScrubber::test_phone_at_start_of_text PASSED [ 72%]
+tests/unit/test_pii_scrubber.py::TestPIIScrubber::test_phone_at_end_of_text PASSED [ 76%]
+...
+tests/unit/test_pii_scrubber.py::TestPIIScrubber::test_mixed_pii_and_text XFAIL [ 92%]
+...
+======================== 24 passed, 1 xfailed in 0.23s =========================
+```
+
+All four named tests now `PASS` (their markers removed); `test_mixed_pii_and_text` stays
+`XFAIL`, unchanged, per Scope above.
+
+**Full-suite regression check:**
+
+```
+$ python -m pytest tests/unit -v -m unit
+...
+================== 379 passed, 49 xfailed, 1 warning in 7.39s ==================
+```
+
+No new failures anywhere else in the suite (the 49 `xfailed` are other seeded bugs, unrelated
+to this change; the 1 warning is a pre-existing, unrelated `RuntimeWarning` about an unawaited
+coroutine in an async mock, present before this change too).
 
 Before implementing, I confirmed the regex change in isolation (outside the repo's test
 harness) against all four formats named in `test_us_phone_formats`:
@@ -152,4 +189,19 @@ before I touch the real file.
 
 ## Deviations
 
-<!-- Filled in after the build. -->
+There seems to be no deviation from the proposed plan. The build matched the plan exactly:
+
+- `PII_PATTERNS["phone_us"]` was changed to add a literal space to each of the three
+  `[-.]?` separator classes, exactly as proposed.
+- `s.scrub('Call me at (555) 123-4567 or 555-123-4567')` returned
+  `'Call me at ([REDACTED] or [REDACTED]'`, matching the predicted output (digits redacted,
+  leading `(` still present) exactly.
+- `s.detect('Call me at (555) 123-4567')` returned a non-empty list with a `phone_us` entry,
+  as predicted.
+- The `xfail` markers were removed from exactly the four named tests
+  (`test_us_phone_number_redaction`, `test_us_phone_formats`, `test_detect_phone_pii`,
+  `test_phone_at_start_of_text`); `test_mixed_pii_and_text`'s marker was left in place.
+- `pytest tests/unit/test_pii_scrubber.py -v -m unit` produced 24 passed, 1 xfailed
+  (`test_mixed_pii_and_text`), matching the plan's expectation of "all 25 tests pass" in the
+  sense that every test not already flagged as a separate, unrelated defect passed.
+- `pytest tests/unit -m unit` (full unit suite) showed no regressions: 379 passed, 49 xfailed.
